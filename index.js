@@ -1,5 +1,6 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const express = require('express');
 const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -11,11 +12,59 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || 'AIzaSyCkH
 
 app.use(express.json());
 
+// Store QR code
+let qrCodeData = '';
+let qrCodeImage = '';
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         args: ['--no-sandbox', '--disable-setuid-sandbox']
     }
+});
+
+// QR Code route
+app.get('/qrcode', (req, res) => {
+    if (!qrCodeData || !qrCodeImage) {
+        return res.send(`
+            <html>
+                <head>
+                    <title>WhatsApp Bot QR Code</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f2f5; }
+                        .container { text-align: center; padding: 20px; background: white; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+                        h1 { color: #128C7E; }
+                        .loading { color: #666; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>WhatsApp Bot QR Code</h1>
+                        <p class="loading">جاري تحميل رمز QR...</p>
+                    </div>
+                </body>
+            </html>
+        `);
+    }
+    res.send(`
+        <html>
+            <head>
+                <title>WhatsApp Bot QR Code</title>
+                <style>
+                    body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f2f5; }
+                    .container { text-align: center; padding: 20px; background: white; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+                    h1 { color: #128C7E; }
+                    img { margin-top: 20px; width: 300px; height: 300px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>WhatsApp Bot QR Code</h1>
+                    <img src="${qrCodeImage}" alt="QR Code" />
+                </div>
+            </body>
+        </html>
+    `);
 });
 
 // تخزين سجل المحادثات
@@ -25,6 +74,12 @@ const chatHistory = new Map();
 client.on('qr', qr => {
     console.log('📌 قم بمسح رمز QR لتسجيل الدخول:');
     qrcode.generate(qr, { small: true });
+    qrCodeData = qr;
+    QRCode.toDataURL(qr, { width: 300 }, (err, url) => {
+        if (!err) {
+            qrCodeImage = url;
+        }
+    });
 });
 
 // ✅ عند تسجيل الدخول
