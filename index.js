@@ -5,13 +5,15 @@ const express = require('express');
 const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
+const chrome = require('chrome-aws-lambda');
+const puppeteer = require('puppeteer-core');
+
 let createMidjourney;
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-if (!global.fetch) {
-  global.fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-}
+// إعداد Express لتحليل JSON
+app.use(express.json());
 
 // إعداد الليمتر
 const rateLimiter = new RateLimiterMemory({
@@ -19,24 +21,24 @@ const rateLimiter = new RateLimiterMemory({
     duration: 10, // خلال 10 ثواني
 });
 
-// Initialize Google AI
+// تهيئة Google AI
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || 'AIzaSyCkHLdlBbIAf06GRiK7h2pfJkAc1P2FyFM');
 
-app.use(express.json());
-
-// Store QR code
+// تخزين رمز QR
 let qrCodeData = '';
 let qrCodeImage = '';
 
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        executablePath: chrome.executablePath,
+        args: chrome.args,
+        headless: chrome.headless
     }
 });
 
-// QR Code route
-app.get('/qrcode', (req, res) => {
+// QR Code endpoint
+app.get('/api/qrcode', (req, res) => {
     if (!qrCodeData || !qrCodeImage) {
         return res.send(`
             <html>
@@ -82,7 +84,7 @@ app.get('/qrcode', (req, res) => {
 // تخزين سجل المحادثات
 const chatHistory = new Map();
 
-// ✅ عند مسح رمز QR بنجاح
+// عند مسح رمز QR بنجاح
 client.on('qr', qr => {
     console.log('📌 قم بمسح رمز QR لتسجيل الدخول:');
     qrcode.generate(qr, { small: true });
@@ -94,11 +96,10 @@ client.on('qr', qr => {
     });
 });
 
-// ✅ عند تسجيل الدخول
+// عند تسجيل الدخول
 client.on('ready', async () => {
     console.log('✅ البوت جاهز للعمل!');
     
-    // قراءة وتخزين الرسائل السابقة عند بدء التشغيل
     try {
         const chats = await client.getChats();
         for (const chat of chats) {
@@ -111,7 +112,7 @@ client.on('ready', async () => {
     }
 });
 
-// 📩 استقبال الرسائل ومعالجتها
+// استقبال الرسائل ومعالجتها
 client.on('message', async message => {
     try {
         // فحص الليميت
@@ -157,12 +158,10 @@ client.on('message', async message => {
         const botMention = '@230511482011758'; // منشن البوت كنص ثابت
 
         if (message.from.includes('@g.us')) {
-            // استخرج كل الأرقام من mentionedIds
             const mentionedNumbers = Array.isArray(message.mentionedIds)
               ? message.mentionedIds.map(id => id.split('@')[0])
               : [];
 
-            // تحقق من المنشن الفعلي أو المنشن النصي في الرسالة
             const mentioned = mentionedNumbers.includes(botNumber) || message.body.includes(botMention);
 
             let isReplyToBot = false;
@@ -177,7 +176,6 @@ client.on('message', async message => {
                 return;
             }
 
-            // تمييز الشخص المرسل (اختياري للعرض في اللوج)
             const senderId = message.author || message.from;
             const senderContact = await client.getContactById(senderId);
             const senderName = senderContact.pushname || senderContact.number || senderId;
@@ -190,10 +188,8 @@ client.on('message', async message => {
             return;
         }
 
-        // إزالة المنشن من نص الرسالة (mentions)
         let cleanBody = message.body.replace(/@\S+\s?/g, '').trim();
 
-        // التعرف على أوامر توليد الصور
         const imagePromptPatterns = [
           /اعمل(?:ي)? صورة (.+)/i,
           /انشئ(?:ي)? صورة (.+)/i,
@@ -228,32 +224,23 @@ client.on('message', async message => {
           return;
         }
 
-        // الحصول على المحادثة
         const chat = await message.getChat();
-        
-        // استخدام الرسائل المخزنة مسبقاً
         const storedMessages = chatHistory.get(chat.id._serialized) || [];
         
         let userInput = cleanBody;
         let hasMedia = false;
-        let detectedLanguage = 'ar'; // Default to Arabic
 
-        // التحقق من وجود رد
         if (message.hasQuotedMsg) {
             const quotedMsg = await message.getQuotedMessage();
             userInput = `الرسالة السابقة: ${quotedMsg.body}\n\nالرد الحالي: ${cleanBody}`;
         }
 
-        // التحقق من وجود وسائط
         if (message.hasMedia) {
             hasMedia = true;
             const media = await message.downloadMedia();
             
             if (message.type === 'image') {
-                // إظهار مؤشر الكتابة
                 await chat.sendStateTyping();
-                
-                // تحليل الصورة باستخدام Gemini
                 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
                 const result = await model.generateContent([
                     "أنت دكستر، مساعد ذكي تم تدريبه بواسطة إبراهيم. قم بتحليل هذه الصورة ووصفها بشكل مفصل. استخدم نفس لغة ولهجة الشخص الذي يتحدث معك.",
@@ -267,10 +254,7 @@ client.on('message', async message => {
                 const response = await result.response;
                 userInput = response.text();
             } else if (message.type === 'ptt' || message.type === 'audio') {
-                // إظهار مؤشر الكتابة
                 await chat.sendStateTyping();
-                
-                // تحويل الصوت إلى نص باستخدام Google Speech-to-Text
                 try {
                     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
                     const result = await model.generateContent([
@@ -292,16 +276,13 @@ client.on('message', async message => {
         }
 
         if (!hasMedia) {
-            // إظهار مؤشر الكتابة
             await chat.sendStateTyping();
         }
 
-        // بناء سياق من الرسائل المخزنة
         const conversationContext = storedMessages
             .map(msg => msg.body)
             .join('\n');
 
-        // استخدام Google AI للحصول على إجابة
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         const prompt = `أنت دكستر، مساعد ذكي تم تدريبه بواسطة إبراهيم. قم بالرد على الرسالة التالية بشكل مفيد ومهذب. استخدم نفس لغة ولهجة الشخص الذي يتحدث معك ولو حد شتمك اشتمو.\n\nسياق المحادثة السابق:\n${conversationContext}\n\nالرسالة: ${userInput}`;
 
@@ -309,30 +290,30 @@ client.on('message', async message => {
         const response = await result.response;
         const aiResponse = response.text();
 
-        // إيقاف مؤشر الكتابة
         await chat.clearState();
-
-        // إرسال الرد دائماً كـ reply
         await client.sendMessage(message.from, aiResponse, { quotedMessageId: message.id._serialized });
 
     } catch (error) {
         console.error('❌ خطأ:', error);
-        // إيقاف مؤشر الكتابة في حالة الخطأ
         const chat = await message.getChat();
         await chat.clearState();
         await client.sendMessage(message.from, '❌ عذراً، حدث خطأ أثناء معالجة رسالتك. حاول مرة أخرى لاحقاً.', { quotedMessageId: message.id._serialized });
     }
 });
 
-// ✅ إعادة تشغيل العميل عند الانفصال
+// إعادة تشغيل العميل عند الانفصال
 client.on('disconnected', (reason) => {
     console.error('❌ تم فصل الاتصال:', reason);
     console.log('🔄 إعادة تشغيل البوت...');
     client.initialize();
 });
 
+// تشغيل الخادم
 app.listen(PORT, () => {
     console.log(`🚀 البوت يعمل على http://localhost:${PORT}`);
 });
 
 client.initialize();
+
+// تصدير الدالة لـ Vercel
+module.exports = app;
